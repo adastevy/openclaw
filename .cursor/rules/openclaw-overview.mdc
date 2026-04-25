@@ -5,116 +5,56 @@ alwaysApply: true
 
 # OpenClaw · 项目总览与本地启动
 
-> 仓库根仍以 `AGENTS.md` 为权威协作规范；本规则只补充“架构速读 + 本地拉起命令”。
+> 仓库根仍以 `AGENTS.md` 为权威协作规范；本规则仅保留架构速读与前后端启动指令。
 
-## 项目架构
+## 项目架构（精简）
 
-- 形态：单仓库（pnpm workspace），TypeScript ESM，Node 22+ 运行时。
-- 核心代码：
-  - `src/`：网关、CLI、运行时核心；不绑定具体扩展。
-  - `src/gateway/`：HTTP/WebSocket 网关、协议层、鉴权、会话/工具调度。
-  - `src/gateway/protocol/`：客户端/服务端共享协议（向后兼容优先）。
-  - `src/agents/`：Agent 装配、工具注册、嵌入式运行器。
-  - `src/channels/`：消息渠道实现（plugin 作者通过 SDK 接入）。
-  - `src/plugins/` + `src/plugin-sdk/`：插件加载器与对外 SDK 门面。
-- 前端：`ui/`（Vite + TS），构建产物由网关在 18789 端口直接托管。
-- 扩展（产品侧称 “plugin”，目录叫 `extensions/`）：`extensions/<id>/`，仅通过
-  `openclaw/plugin-sdk/*`、manifest、注入式 runtime 帮助器与核心交互。
-- 桌面/移动壳：`apps/`（macOS、iOS、Android）、`Swabble/`。
-- 文档与脚本：`docs/`（运行 `pnpm docs:list` 拿索引）、`scripts/`、`test/helpers*/`。
-- 关键不变量：核心保持扩展无关；扩展不得 import 核心 `src/**` 或彼此的 `src/**`；
-  协议演进先做加性变更，破坏性改动需版本化、文档与客户端跟进。
+- Monorepo（`pnpm workspace`），TypeScript ESM，Node 22+。
+- 后端核心：`src/`（CLI、runtime、gateway）。
+  - `src/gateway/`：HTTP/WS 网关、鉴权、会话与工具调度。
+  - `src/gateway/protocol/`：协议定义（客户端/服务端共享）。
+  - `src/plugins/` + `src/plugin-sdk/`：插件加载与 SDK 门面。
+- 前端：`ui/`（Vite + TS），开发时走 `ui:dev`，产物可由 gateway 托管。
+- 扩展：`extensions/<id>/`，通过 `openclaw/plugin-sdk/*` 与核心交互。
 
-## 运行时与配置
+## 启动环境与命令（精简）
 
-- Node ≥ 22.14.0（仓库 `engines` 强约束）；包管理器 `pnpm`。
-- 默认配置文件：`~/.openclaw/openclaw.json`
-  - `gateway.auth.mode`：`token`（默认）。
-  - `gateway.auth.token`：网关共享密钥；前端必须用同一 token 才能握手。
-  - **绝不要把真实 token 提交到 git 或写进任何受版本控制的文件**（含本规则）。
-    需要使用时一律通过 `pnpm openclaw config get gateway.auth.token` 现取。
-- 默认端口：
-  - 网关 HTTP/WS：`127.0.0.1:18789`（也托管 `ui:build` 后的前端）。
-  - Vite dev server：`0.0.0.0:5173`（仅本地开发用，热更新；连接的仍是 18789）。
+运行环境：
 
-## 本机环境（Linux 服务器，已配置）
+- Node `>=22.14.0`
+- `pnpm`
+- 配置文件：`~/.openclaw/openclaw.json`
 
-> 仅记录本机一次性手工补的"系统级偏差"，方便重启/换会话后秒恢复。
-> 其他开发者按 `运行时与配置` 走标准流程即可，不必照搬下面的路径。
-
-- 系统 Node 版本偏低，已把 Node 22 单独解压到：
-  `/home/ubuntu/.local/node22/node-v22.16.0-linux-x64/`
-- 任何新终端跑 `pnpm` 前先把它放进 PATH：
-
-  ```bash
-  export PATH="/home/ubuntu/.local/node22/node-v22.16.0-linux-x64/bin:$PATH"
-  node --version   # 应输出 v22.x
-  ```
-
-- 想永久生效可把上面 `export` 追加到 `~/.bashrc` / `~/.profile`。
-
-## 一次性环境准备（首次或换机）
+本机若系统 Node 版本偏低，先注入 Node 22：
 
 ```bash
-# 0. 若系统 Node < 22，先按上节把 Node 22 放进 PATH
-pnpm install                  # 依赖
-pnpm openclaw setup           # 生成 ~/.openclaw/openclaw.json，工作区与 token
-pnpm ui:build                 # 让网关 18789 托管 Control UI（首次可选，但推荐）
+export PATH="/home/ubuntu/.local/node22/node-v22.16.0-linux-x64/bin:$PATH"
+node --version
 ```
 
-> 不要为了绕开 Node 版本检查给 `pnpm` 加 `--ignore-scripts` 等参数。
-
-## 启动前后端（开发循环）
-
-各占一个长驻终端，Ctrl+C 退出；代码改完自动重启/热更新，无需手动 kill。
+首次准备：
 
 ```bash
-# 终端 A：后端 gateway（HTTP/WS 监听 127.0.0.1:18789）
+pnpm install
+pnpm openclaw setup
+pnpm ui:build
+```
+
+开发启动（两个终端）：
+
+```bash
+# 终端 A：后端 gateway（默认 127.0.0.1:18789）
 export PATH="/home/ubuntu/.local/node22/node-v22.16.0-linux-x64/bin:$PATH"
 pnpm gateway:watch
 
-# 终端 B：前端 Vite dev server（http://localhost:5173）
+# 终端 B：前端 dev server（默认 localhost:5173）
 export PATH="/home/ubuntu/.local/node22/node-v22.16.0-linux-x64/bin:$PATH"
 pnpm ui:dev
 ```
 
-启动成功的标志：
-- 后端日志出现 `[gateway] ready (... plugins: ...)` 与 `[gateway] log file: /tmp/openclaw/openclaw-YYYY-MM-DD.log`。
-- 前端日志出现 `Local:   http://localhost:5173/`。
-- `ss -tlnp | grep -E '18789|5173'` 能同时看到两个端口。
-
-## 访问 Control UI（必须带 token，否则会报 token mismatch/missing）
-
-优先用项目自带命令拿到带 token 的 URL：
+前台直接启动网关（非 watch）：
 
 ```bash
-pnpm openclaw dashboard --no-open
-# 输出示例：
-# Dashboard URL: http://127.0.0.1:18789/#token=<gateway.auth.token>
+export PATH="/home/ubuntu/.local/node22/node-v22.16.0-linux-x64/bin:$PATH"
+pnpm openclaw gateway
 ```
-
-打开方式（任选其一）：
-
-- **生产形态**（推荐日常使用）：直接打开上面的 `http://127.0.0.1:18789/#token=...`。
-- **前端调试**（要热更新）：把 token 拼到 Vite dev URL 的 hash 上：
-  `http://localhost:5173/#token=<gateway.auth.token>`。
-- 前端首次加载会从 `#token=` 注入 sessionStorage 并立刻把 hash 抹掉，仅当前标签页有效。
-
-需要查看或重置 token：
-
-```bash
-pnpm openclaw config get gateway.auth.token
-pnpm openclaw doctor --generate-gateway-token
-```
-
-## 排错速查
-
-- `unauthorized: gateway token mismatch / missing`：sessionStorage 没有正确 token。
-  - 后端日志会打 `[ws] unauthorized ... reason=token_missing|token_mismatch ... origin=http://localhost:5173`。
-  - 修复：用 `pnpm openclaw dashboard --no-open` 拿到带 `#token=` 的 URL，
-    从地址栏整串粘贴（不要从已打开的标签里点跳转）；或在 Settings → Gateway 里手填。
-  - 反复失败时清掉浏览器 sessionStorage 再重粘一次。
-- 服务端口检查：`ss -tlnp | grep -E '18789|5173'`（或 `lsof -i :18789 -i :5173`）。
-- 网关状态：`pnpm openclaw gateway status --deep`。
-- 远程开发（Cursor Remote / SSH）：需把 `5173` 与 `18789` 同时端口转发，
-  浏览器仍以 `localhost:<port>` 访问，token 校验逻辑不变。
