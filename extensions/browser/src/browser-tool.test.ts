@@ -69,6 +69,7 @@ const browserConfigMocks = vi.hoisted(() => ({
     controlPort: 18791,
     profiles: {},
     defaultProfile: "openclaw",
+    actionTimeoutMs: 60_000,
   })),
   resolveProfile: vi.fn((resolved: Record<string, unknown>, name: string) => {
     const profile = (resolved.profiles as Record<string, Record<string, unknown>> | undefined)?.[
@@ -107,15 +108,6 @@ vi.mock("./browser/config.js", () => browserConfigMocks);
 const nodesUtilsMocks = vi.hoisted(() => ({
   listNodes: vi.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
 }));
-vi.mock("../../../src/agents/tools/nodes-utils.js", async () => {
-  const actual = await vi.importActual<typeof import("../../../src/agents/tools/nodes-utils.js")>(
-    "../../../src/agents/tools/nodes-utils.js",
-  );
-  return {
-    ...actual,
-    listNodes: nodesUtilsMocks.listNodes,
-  };
-});
 
 const gatewayMocks = vi.hoisted(() => ({
   callGatewayTool: vi.fn(
@@ -125,7 +117,6 @@ const gatewayMocks = vi.hoisted(() => ({
     }),
   ),
 }));
-vi.mock("../../../src/agents/tools/gateway.js", () => gatewayMocks);
 
 const configMocks = vi.hoisted(() => ({
   loadConfig: vi.fn<
@@ -135,13 +126,13 @@ const configMocks = vi.hoisted(() => ({
     }
   >(() => ({ browser: {} })),
 }));
-vi.mock("openclaw/plugin-sdk/config-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/config-runtime")>(
-    "openclaw/plugin-sdk/config-runtime",
-  );
+vi.mock("openclaw/plugin-sdk/runtime-config-snapshot", async () => {
+  const actual = await vi.importActual<
+    typeof import("openclaw/plugin-sdk/runtime-config-snapshot")
+  >("openclaw/plugin-sdk/runtime-config-snapshot");
   return {
     ...actual,
-    loadConfig: configMocks.loadConfig,
+    getRuntimeConfig: configMocks.loadConfig,
   };
 });
 
@@ -155,13 +146,14 @@ vi.mock("./browser/session-tab-registry.js", () => sessionTabRegistryMocks);
 const toolCommonMocks = vi.hoisted(() => ({
   imageResultFromFile: vi.fn(),
 }));
-vi.mock("../../../src/agents/tools/common.js", async () => {
-  const actual = await vi.importActual<typeof import("../../../src/agents/tools/common.js")>(
-    "../../../src/agents/tools/common.js",
-  );
+vi.mock("./sdk-setup-tools.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./sdk-setup-tools.js")>("./sdk-setup-tools.js");
   return {
     ...actual,
+    callGatewayTool: gatewayMocks.callGatewayTool,
     imageResultFromFile: toolCommonMocks.imageResultFromFile,
+    listNodes: nodesUtilsMocks.listNodes,
   };
 });
 
@@ -192,6 +184,7 @@ vi.mock("./browser-tool.runtime.js", () => {
     ...configMocks,
     ...gatewayMocks,
     ...sessionTabRegistryMocks,
+    getRuntimeConfig: configMocks.loadConfig,
     applyBrowserProxyPaths: vi.fn(),
     getBrowserProfileCapabilities: (profile: Record<string, unknown>) => ({
       usesChromeMcp: profile.driver === "existing-session",
@@ -249,6 +242,7 @@ function resetBrowserToolMocks() {
     controlPort: 18791,
     profiles: {},
     defaultProfile: "openclaw",
+    actionTimeoutMs: 60_000,
   });
   nodesUtilsMocks.listNodes.mockResolvedValue([]);
   browserToolTesting.setDepsForTest({
@@ -267,7 +261,7 @@ function resetBrowserToolMocks() {
     browserStatus: browserClientMocks.browserStatus as never,
     browserStop: browserClientMocks.browserStop as never,
     imageResultFromFile: toolCommonMocks.imageResultFromFile as never,
-    loadConfig: configMocks.loadConfig as never,
+    getRuntimeConfig: configMocks.loadConfig as never,
     listNodes: nodesUtilsMocks.listNodes as never,
     callGatewayTool: gatewayMocks.callGatewayTool as never,
     trackSessionBrowserTab: sessionTabRegistryMocks.trackSessionBrowserTab as never,
@@ -278,7 +272,7 @@ function resetBrowserToolMocks() {
     browserConsoleMessages: browserActionsMocks.browserConsoleMessages as never,
     browserSnapshot: browserClientMocks.browserSnapshot as never,
     browserTabs: browserClientMocks.browserTabs as never,
-    loadConfig: configMocks.loadConfig as never,
+    getRuntimeConfig: configMocks.loadConfig as never,
     imageResultFromFile: toolCommonMocks.imageResultFromFile as never,
   });
 }
@@ -292,6 +286,7 @@ function setResolvedBrowserProfiles(
     controlPort: 18791,
     profiles,
     defaultProfile,
+    actionTimeoutMs: 60_000,
   });
 }
 
@@ -1076,6 +1071,87 @@ describe("browser tool act compatibility", () => {
         targetId: "tab-2",
       },
       expect.objectContaining({ profile: undefined }),
+    );
+  });
+
+  it("applies configured browser action timeout when act timeout is omitted", async () => {
+    configMocks.loadConfig.mockReturnValue({ browser: { actionTimeoutMs: 45_000 } });
+
+    const tool = createBrowserTool();
+    await tool.execute?.("call-1", {
+      action: "act",
+      request: {
+        kind: "wait",
+        timeMs: 20_000,
+      },
+    });
+
+    expect(browserActionsMocks.browserAct).toHaveBeenCalledWith(
+      undefined,
+      {
+        kind: "wait",
+        timeMs: 20_000,
+        timeoutMs: 45_000,
+      },
+      expect.objectContaining({ profile: undefined }),
+    );
+  });
+
+  it("does not inject unsupported action timeout for existing-session type actions", async () => {
+    setResolvedBrowserProfiles({
+      user: { driver: "existing-session", attachOnly: true, color: "#00AA00" },
+    });
+    configMocks.loadConfig.mockReturnValue({ browser: { actionTimeoutMs: 45_000 } });
+
+    const tool = createBrowserTool();
+    await tool.execute?.("call-1", {
+      action: "act",
+      profile: "user",
+      target: "host",
+      request: {
+        kind: "type",
+        ref: "f1e3",
+        text: "Test Title",
+      },
+    });
+
+    expect(browserActionsMocks.browserAct).toHaveBeenCalledWith(
+      undefined,
+      {
+        kind: "type",
+        ref: "f1e3",
+        text: "Test Title",
+      },
+      expect.objectContaining({ profile: "user" }),
+    );
+  });
+
+  it("passes configured act timeout through node proxy with transport slack", async () => {
+    mockSingleBrowserProxyNode();
+    configMocks.loadConfig.mockReturnValue({
+      browser: {
+        actionTimeoutMs: 45_000,
+      },
+      gateway: { nodes: { browser: { node: "node-1" } } },
+    });
+
+    const tool = createBrowserTool();
+    await tool.execute?.("call-1", {
+      action: "act",
+      target: "node",
+      request: { kind: "wait", timeMs: 20_000 },
+    });
+
+    expect(gatewayMocks.callGatewayTool).toHaveBeenCalledWith(
+      "node.invoke",
+      { timeoutMs: 55_000 },
+      expect.objectContaining({
+        params: expect.objectContaining({
+          path: "/act",
+          body: { kind: "wait", timeMs: 20_000, timeoutMs: 45_000 },
+          timeoutMs: 45_000 + 5_000,
+        }),
+      }),
     );
   });
 });

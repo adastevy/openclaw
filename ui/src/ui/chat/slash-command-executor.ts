@@ -377,17 +377,30 @@ async function executeUsage(
     if (!session) {
       return { content: "No active session." };
     }
-    const input = session.inputTokens ?? 0;
-    const output = session.outputTokens ?? 0;
-    const total = session.totalTokens ?? input + output;
+    const hasInputTokens = Number.isFinite(session.inputTokens);
+    const hasOutputTokens = Number.isFinite(session.outputTokens);
+    const input = hasInputTokens ? (session.inputTokens ?? 0) : 0;
+    const output = hasOutputTokens ? (session.outputTokens ?? 0) : 0;
+    const cumulativeTotal = hasInputTokens || hasOutputTokens ? input + output : null;
+    const contextSnapshotTotal = Number.isFinite(session.totalTokens)
+      ? (session.totalTokens ?? null)
+      : cumulativeTotal;
+    const totalTokensFresh = session.totalTokensFresh !== false;
     const ctx = session.contextTokens ?? 0;
-    const pct = ctx > 0 ? Math.round((input / ctx) * 100) : null;
+    const pct =
+      contextSnapshotTotal !== null && totalTokensFresh && ctx > 0
+        ? Math.round((contextSnapshotTotal / ctx) * 100)
+        : null;
+    const totalDisplay =
+      cumulativeTotal === null
+        ? "n/a"
+        : `${totalTokensFresh ? "" : "~"}${fmtTokens(cumulativeTotal)}`;
 
     const lines = [
       "**Session Usage**",
       `Input: **${fmtTokens(input)}** tokens`,
       `Output: **${fmtTokens(output)}** tokens`,
-      `Total: **${fmtTokens(total)}** tokens`,
+      `Total: **${totalDisplay}** tokens`,
     ];
     if (pct !== null) {
       lines.push(`Context: **${pct}%** of ${fmtTokens(ctx)}`);
@@ -413,7 +426,8 @@ async function executeAgents(client: GatewayBrowserClient): Promise<SlashCommand
       const isDefault = agent.id === result?.defaultId;
       const name = agent.identity?.name || agent.name || agent.id;
       const marker = isDefault ? " *(default)*" : "";
-      lines.push(`- \`${agent.id}\` — ${name}${marker}`);
+      const runtime = agent.agentRuntime?.id ? ` · runtime \`${agent.agentRuntime.id}\`` : "";
+      lines.push(`- \`${agent.id}\` — ${name}${marker}${runtime}`);
     }
     return { content: lines.join("\n") };
   } catch (err) {
@@ -641,16 +655,21 @@ function resolveThinkingLevelOptionsForSession(
   if (session?.thinkingLevels?.length) {
     return session.thinkingLevels;
   }
-  if (defaults?.thinkingLevels?.length) {
+  const sessionModelMatchesDefaults =
+    (!session?.modelProvider || session.modelProvider === defaults?.modelProvider) &&
+    (!session?.model || session.model === defaults?.model);
+  if (sessionModelMatchesDefaults && defaults?.thinkingLevels?.length) {
     return defaults.thinkingLevels;
   }
   const labels =
-    session?.thinkingOptions?.length || defaults?.thinkingOptions?.length
-      ? (session?.thinkingOptions ?? defaults?.thinkingOptions ?? [])
-      : formatThinkingLevels(
-          session?.modelProvider ?? defaults?.modelProvider,
-          session?.model ?? defaults?.model,
-        ).split(/\s*,\s*/);
+    (session?.thinkingOptions?.length ? session.thinkingOptions : null) ??
+    (sessionModelMatchesDefaults && defaults?.thinkingOptions?.length
+      ? defaults.thinkingOptions
+      : null) ??
+    formatThinkingLevels(
+      session?.modelProvider ?? defaults?.modelProvider,
+      session?.model ?? defaults?.model,
+    ).split(/\s*,\s*/);
   return labels.filter(Boolean).map((label) => ({
     id: normalizeThinkLevel(label) ?? normalizeLowercaseStringOrEmpty(label),
     label,
@@ -712,7 +731,9 @@ async function loadModelCatalog(
   opts?: { allowFailure?: boolean },
 ): Promise<ModelCatalogEntry[]> {
   try {
-    const result = await client.request<{ models: ModelCatalogEntry[] }>("models.list", {});
+    const result = await client.request<{ models: ModelCatalogEntry[] }>("models.list", {
+      view: "configured",
+    });
     return result?.models ?? [];
   } catch (err) {
     if (opts?.allowFailure) {

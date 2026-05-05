@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { createParameterFreeTool } from "../../../test/helpers/agents/schema-normalization-runtime-contract.js";
+import { createParameterFreeTool } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
+import { describe, expect, it, vi } from "vitest";
 import { buildAgentRuntimePlan } from "./build.js";
+
+vi.mock("../../plugins/provider-hook-runtime.js", () => ({
+  __testing: {},
+  prepareProviderExtraParams: vi.fn(() => undefined),
+  resolveProviderAuthProfileId: vi.fn(() => undefined),
+  resolveProviderExtraParamsForTransport: vi.fn(() => undefined),
+  resolveProviderFollowupFallbackRoute: vi.fn(() => undefined),
+  resolveProviderHookPlugin: vi.fn(() => undefined),
+  resolveProviderPluginsForHooks: vi.fn(() => []),
+  resolveProviderRuntimePlugin: vi.fn(() => undefined),
+  wrapProviderStreamFn: vi.fn(() => undefined),
+}));
 
 describe("AgentRuntimePlan", () => {
   it("records resolved model, auth, transport, tool, delivery, and observability policy", () => {

@@ -1,14 +1,7 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveBundledPluginCompatibleLoadValues } from "./activation-context.js";
-import {
-  createPluginActivationSource,
-  normalizePluginsConfig,
-  resolveEffectivePluginActivationState,
-} from "./config-state.js";
+import { resolveEnabledBundledManifestContractPlugins } from "./bundled-manifest-contract-plugins.js";
 import { loadBundledDocumentExtractorEntriesFromDir } from "./document-extractor-public-artifacts.js";
 import type { PluginDocumentExtractorEntry } from "./document-extractor-types.js";
-import { loadPluginManifestRegistry } from "./manifest-registry.js";
-import type { PluginManifestRecord } from "./manifest-registry.js";
 
 function compareExtractors(
   left: PluginDocumentExtractorEntry,
@@ -22,79 +15,28 @@ function compareExtractors(
   return left.id.localeCompare(right.id) || left.pluginId.localeCompare(right.pluginId);
 }
 
-function resolveBundledDocumentExtractorCompatPluginIds(params: {
+function resolveExplicitAllowedDocumentExtractorPluginIds(params: {
   config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
   onlyPluginIds?: readonly string[];
-}): string[] {
-  const onlyPluginIdSet =
-    params.onlyPluginIds && params.onlyPluginIds.length > 0 ? new Set(params.onlyPluginIds) : null;
-  return loadPluginManifestRegistry({
-    config: params.config,
-    workspaceDir: params.workspaceDir,
-    env: params.env,
-  })
-    .plugins.filter(
-      (plugin) =>
-        plugin.origin === "bundled" &&
-        (!onlyPluginIdSet || onlyPluginIdSet.has(plugin.id)) &&
-        (plugin.contracts?.documentExtractors?.length ?? 0) > 0,
-    )
-    .map((plugin) => plugin.id)
-    .toSorted((left, right) => left.localeCompare(right));
-}
-
-function resolveEnabledBundledDocumentExtractorPlugins(params: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  onlyPluginIds?: readonly string[];
-}): PluginManifestRecord[] {
-  if (params.config?.plugins?.enabled === false) {
-    return [];
+}): string[] | null {
+  const allow = params.config?.plugins?.allow;
+  if (!Array.isArray(allow) || allow.length === 0) {
+    return null;
   }
-
-  const activation = resolveBundledPluginCompatibleLoadValues({
-    rawConfig: params.config,
-    env: params.env,
-    workspaceDir: params.workspaceDir,
-    onlyPluginIds: params.onlyPluginIds,
-    applyAutoEnable: true,
-    compatMode: {
-      allowlist: false,
-      enablement: "allowlist",
-      vitest: true,
-    },
-    resolveCompatPluginIds: resolveBundledDocumentExtractorCompatPluginIds,
-  });
-  const normalizedPlugins = normalizePluginsConfig(activation.config?.plugins);
-  const activationSource = createPluginActivationSource({
-    config: activation.activationSourceConfig,
-  });
   const onlyPluginIdSet =
     params.onlyPluginIds && params.onlyPluginIds.length > 0 ? new Set(params.onlyPluginIds) : null;
-  return loadPluginManifestRegistry({
-    config: activation.config,
-    workspaceDir: params.workspaceDir,
-    env: params.env,
-  }).plugins.filter((plugin) => {
-    if (
-      plugin.origin !== "bundled" ||
-      (onlyPluginIdSet && !onlyPluginIdSet.has(plugin.id)) ||
-      (plugin.contracts?.documentExtractors?.length ?? 0) === 0
-    ) {
-      return false;
-    }
-    return resolveEffectivePluginActivationState({
-      id: plugin.id,
-      origin: plugin.origin,
-      config: normalizedPlugins,
-      rootConfig: activation.config,
-      enabledByDefault: plugin.enabledByDefault,
-      activationSource,
-    }).enabled;
-  });
+  const deniedPluginIds = new Set(params.config?.plugins?.deny ?? []);
+  const entries = params.config?.plugins?.entries ?? {};
+  return [
+    ...new Set(
+      allow
+        .map((pluginId) => pluginId.trim())
+        .filter(Boolean)
+        .filter((pluginId) => !onlyPluginIdSet || onlyPluginIdSet.has(pluginId))
+        .filter((pluginId) => !deniedPluginIds.has(pluginId))
+        .filter((pluginId) => entries[pluginId]?.enabled !== false),
+    ),
+  ].toSorted((left, right) => left.localeCompare(right));
 }
 
 export function resolvePluginDocumentExtractors(params?: {
@@ -105,17 +47,30 @@ export function resolvePluginDocumentExtractors(params?: {
 }): PluginDocumentExtractorEntry[] {
   const extractors: PluginDocumentExtractorEntry[] = [];
   const loadErrors: unknown[] = [];
-  for (const plugin of resolveEnabledBundledDocumentExtractorPlugins({
+  const explicitAllowedPluginIds = resolveExplicitAllowedDocumentExtractorPluginIds({
     config: params?.config,
-    workspaceDir: params?.workspaceDir,
-    env: params?.env,
     onlyPluginIds: params?.onlyPluginIds,
-  })) {
+  });
+  const pluginIds =
+    explicitAllowedPluginIds ??
+    resolveEnabledBundledManifestContractPlugins({
+      config: params?.config,
+      workspaceDir: params?.workspaceDir,
+      env: params?.env,
+      onlyPluginIds: params?.onlyPluginIds,
+      contract: "documentExtractors",
+      compatMode: {
+        allowlist: false,
+        enablement: "allowlist",
+        vitest: true,
+      },
+    }).map((plugin) => plugin.id);
+  for (const pluginId of pluginIds) {
     let loaded: PluginDocumentExtractorEntry[] | null;
     try {
       loaded = loadBundledDocumentExtractorEntriesFromDir({
-        dirName: plugin.id,
-        pluginId: plugin.id,
+        dirName: pluginId,
+        pluginId,
       });
     } catch (error) {
       loadErrors.push(error);

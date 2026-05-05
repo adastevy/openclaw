@@ -24,12 +24,47 @@ function createStoreTestState(storePath: string) {
     log: logger,
     nowMs: () => STORE_TEST_NOW,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeatNow: vi.fn(),
+    requestHeartbeat: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
 }
 
 describe("cron service store load: missing sessionTarget", () => {
+  it("hydrates flat legacy cron rows before recomputing next runs", async () => {
+    const { storePath } = await makeStorePath();
+
+    await writeSingleJobStore(storePath, {
+      id: "legacy-flat-cron",
+      name: "dbus-watchdog",
+      kind: "cron",
+      cron: "*/10 * * * *",
+      tz: "UTC",
+      session: "isolated",
+      message: "watch dbus",
+      tools: ["exec"],
+      enabled: true,
+      created_at: "2026-04-17T20:09:00Z",
+    });
+
+    const state = createStoreTestState(storePath);
+    await ensureLoaded(state);
+
+    const job = findJobOrThrow(state, "legacy-flat-cron");
+    expect(job.schedule).toEqual({
+      kind: "cron",
+      expr: "*/10 * * * *",
+      tz: "UTC",
+    });
+    expect(job.sessionTarget).toBe("isolated");
+    expect(job.payload).toEqual({
+      kind: "agentTurn",
+      message: "watch dbus",
+      toolsAllow: ["exec"],
+    });
+    expect(job.state.nextRunAtMs).toEqual(expect.any(Number));
+    expect(() => assertSupportedJobSpec(job)).not.toThrow();
+  });
+
   it('defaults missing sessionTarget to "main" for systemEvent payloads', async () => {
     const { storePath } = await makeStorePath();
 

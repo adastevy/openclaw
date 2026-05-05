@@ -1,14 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { isLiveTestEnabled } from "../../src/agents/live-test-helpers.js";
 import {
   registerProviderPlugin,
   requireRegisteredProvider,
-} from "../../test/helpers/plugins/provider-registration.js";
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   normalizeTranscriptForMatch,
   runRealtimeSttLiveTest,
   synthesizeElevenLabsLiveSpeech,
-} from "../../test/helpers/stt-live-audio.js";
+} from "openclaw/plugin-sdk/provider-test-contracts";
+import { isLiveTestEnabled } from "openclaw/plugin-sdk/test-env";
+import { describe, expect, it } from "vitest";
 import plugin from "./index.js";
 import { elevenLabsMediaUnderstandingProvider } from "./media-understanding-provider.js";
 import { buildElevenLabsRealtimeTranscriptionProvider } from "./realtime-transcription-provider.js";
@@ -25,14 +25,14 @@ const registerElevenLabsPlugin = () =>
   });
 
 describeLive("elevenlabs plugin live", () => {
-  it("synthesizes speech through the registered provider", async () => {
+  it("synthesizes speech through the registered provider with eleven_v3", async () => {
     const { speechProviders } = await registerElevenLabsPlugin();
     const provider = requireRegisteredProvider(speechProviders, "elevenlabs");
 
     const audioFile = await provider.synthesize({
-      text: "OpenClaw ElevenLabs text to speech integration test OK.",
+      text: "OpenClaw ElevenLabs eleven v three text to speech integration test OK.",
       cfg: { plugins: { enabled: true } } as never,
-      providerConfig: { apiKey: ELEVENLABS_KEY },
+      providerConfig: { apiKey: ELEVENLABS_KEY, modelId: "eleven_v3" },
       target: "audio-file",
       timeoutMs: 45_000,
     });
@@ -61,7 +61,7 @@ describeLive("elevenlabs plugin live", () => {
 
     const normalized = normalizeTranscriptForMatch(transcript?.text ?? "");
     expect(normalized).toContain("openclaw");
-    expect(normalized).toContain("elevenlabs");
+    expect(normalized).toMatch(/(?:elevenlabs|11labs)/);
   }, 90_000);
 
   it("streams realtime STT through the registered transcription provider", async () => {

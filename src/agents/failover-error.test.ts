@@ -8,6 +8,7 @@ import {
   resolveFailoverStatus,
 } from "./failover-error.js";
 import { classifyFailoverSignal } from "./pi-embedded-helpers/errors.js";
+import { SessionWriteLockTimeoutError } from "./session-write-lock-error.js";
 
 // OpenAI 429 example shape: https://help.openai.com/en/articles/5955604-how-can-i-solve-429-too-many-requests-errors
 const OPENAI_RATE_LIMIT_MESSAGE =
@@ -359,7 +360,93 @@ describe("failover-error", () => {
     ).toBe("overloaded");
   });
 
-  it("classifies provider-scoped generic upstream errors for failover", () => {
+  it("does not classify session lock wait errors as model timeout failover", () => {
+    const sessionLockError = new SessionWriteLockTimeoutError({
+      timeoutMs: 10_000,
+      owner: "pid=37121",
+      lockPath: "/tmp/openclaw/session.jsonl.lock",
+    });
+    expect(resolveFailoverReasonFromError(sessionLockError)).toBeNull();
+    expect(isTimeoutError(sessionLockError)).toBe(false);
+
+    const wrappedLockError = Object.assign(new Error("operation timed out"), {
+      name: "AbortError",
+      cause: sessionLockError,
+    });
+    expect(resolveFailoverReasonFromError(wrappedLockError)).toBeNull();
+    expect(isTimeoutError(wrappedLockError)).toBe(false);
+
+    const abortWrappedLockError = Object.assign(new Error("request was aborted"), {
+      name: "AbortError",
+      cause: sessionLockError,
+    });
+    expect(resolveFailoverReasonFromError(abortWrappedLockError)).toBeNull();
+    expect(isTimeoutError(abortWrappedLockError)).toBe(false);
+  });
+
+  it("keeps explicit provider failover metadata authoritative over nested session lock text", () => {
+    expect(
+      resolveFailoverReasonFromError({
+        status: 429,
+        code: "RESOURCE_EXHAUSTED",
+        message: "upstream quota pressure",
+        cause: new SessionWriteLockTimeoutError({
+          timeoutMs: 10_000,
+          owner: "pid=37121",
+          lockPath: "/tmp/openclaw/session.jsonl.lock",
+        }),
+      }),
+    ).toBe("rate_limit");
+  });
+
+  it("keeps inferred HTTP failover metadata authoritative over nested session lock text", () => {
+    expect(
+      resolveFailoverReasonFromError({
+        message: "HTTP 429: upstream quota pressure",
+        cause: new SessionWriteLockTimeoutError({
+          timeoutMs: 10_000,
+          owner: "pid=37121",
+          lockPath: "/tmp/openclaw/session.jsonl.lock",
+        }),
+      }),
+    ).toBe("rate_limit");
+  });
+
+  it("does not treat generic abort codes as explicit failover metadata over nested session lock text", () => {
+    expect(
+      resolveFailoverReasonFromError({
+        name: "AbortError",
+        code: "ABORT_ERR",
+        message: "The operation was aborted",
+        cause: new SessionWriteLockTimeoutError({
+          timeoutMs: 10_000,
+          owner: "pid=37121",
+          lockPath: "/tmp/openclaw/session.jsonl.lock",
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not let cause-based failover classification bypass wrapper session lock suppression", () => {
+    expect(
+      resolveFailoverReasonFromError({
+        message: "wrapper",
+        reason: new SessionWriteLockTimeoutError({
+          timeoutMs: 10_000,
+          owner: "pid=37121",
+          lockPath: "/tmp/openclaw/session.jsonl.lock",
+        }),
+        cause: new Error("operation timed out"),
+      }),
+    ).toBeNull();
+  });
+
+  it("classifies bare pi-ai stream wrapper as timeout regardless of provider (#71620)", () => {
+    expect(
+      resolveFailoverReasonFromError({
+        message: "An unknown error occurred",
+      }),
+    ).toBe("timeout");
     expect(
       resolveFailoverReasonFromError({
         provider: "anthropic",
@@ -368,24 +455,28 @@ describe("failover-error", () => {
     ).toBe("timeout");
     expect(
       resolveFailoverReasonFromError({
+        provider: "google",
+        message: "An unknown error occurred",
+      }),
+    ).toBe("timeout");
+    expect(
+      resolveFailoverReasonFromError({
+        provider: "openrouter",
+        message: "An unknown error occurred",
+      }),
+    ).toBe("timeout");
+  });
+
+  it("classifies openrouter-scoped upstream errors for failover", () => {
+    expect(
+      resolveFailoverReasonFromError({
         provider: "openrouter",
         message: "Provider returned error",
       }),
     ).toBe("timeout");
   });
 
-  it("does not classify provider-scoped upstream errors without the matching provider", () => {
-    expect(
-      resolveFailoverReasonFromError({
-        message: "An unknown error occurred",
-      }),
-    ).toBeNull();
-    expect(
-      resolveFailoverReasonFromError({
-        provider: "openrouter",
-        message: "An unknown error occurred",
-      }),
-    ).toBeNull();
+  it("does not classify openrouter-scoped upstream errors without the matching provider", () => {
     expect(
       resolveFailoverReasonFromError({
         message: "Provider returned error",
@@ -509,6 +600,33 @@ describe("failover-error", () => {
         message: "LLM error: monthly limit reached",
       }),
     ).toBe("rate_limit");
+  });
+
+  it("treats Chinese provider network/server errors as timeout for failover", () => {
+    // ZhipuAI/GLM error code 1234: "网络错误" — real production error
+    expect(
+      resolveFailoverReasonFromError({
+        message:
+          "LLM error 1234: 网络错误，错误id：202603281427587491f4467f1c4712，请联系客服。 (request_id: 202603281427587491f4467f1c4712)",
+      }),
+    ).toBe("timeout");
+    // JSON payload variant
+    expect(
+      resolveFailoverReasonFromError({
+        message:
+          '{"error":{"code":"1234","message":"网络错误，错误id：abc123，请联系客服。"},"request_id":"abc123"}',
+      }),
+    ).toBe("timeout");
+    // Generic Chinese server errors
+    expect(resolveFailoverReasonFromError({ message: "系统错误，请稍后重试" })).toBe("timeout");
+    expect(resolveFailoverReasonFromError({ message: "服务器内部错误" })).toBe("timeout");
+  });
+
+  it("treats Chinese provider auth errors as auth for failover", () => {
+    // ZhipuAI/GLM 403: "您无权访问glm-5.1" — real production error
+    expect(resolveFailoverReasonFromError({ message: "403 您无权访问glm-5.1。" })).toBe("auth");
+    expect(resolveFailoverReasonFromError({ message: "认证失败" })).toBe("auth");
+    expect(resolveFailoverReasonFromError({ message: "鉴权失败，请检查API Key" })).toBe("auth");
   });
 
   it("treats overloaded provider payloads as overloaded", () => {
@@ -853,5 +971,41 @@ describe("failover-error", () => {
     const described = describeFailoverError(123);
     expect(described.message).toBe("123");
     expect(described.reason).toBeUndefined();
+  });
+
+  it("propagates sessionId/lane/provider attribution through FailoverError (#42713)", () => {
+    const err = new FailoverError("all fallbacks exhausted", {
+      reason: "rate_limit",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      profileId: "profile-2",
+      sessionId: "session:browser-abcd",
+      lane: "answer",
+      status: 429,
+    });
+    expect(err.sessionId).toBe("session:browser-abcd");
+    expect(err.lane).toBe("answer");
+    expect(describeFailoverError(err)).toMatchObject({
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      profileId: "profile-2",
+      sessionId: "session:browser-abcd",
+      lane: "answer",
+      reason: "rate_limit",
+      status: 429,
+    });
+  });
+
+  it("coerceToFailoverError carries sessionId/lane from context (#42713)", () => {
+    const err = coerceToFailoverError("rate limit exceeded", {
+      provider: "openai",
+      model: "gpt-5",
+      profileId: "p1",
+      sessionId: "session:browser-1234",
+      lane: "draft",
+    });
+    expect(err?.sessionId).toBe("session:browser-1234");
+    expect(err?.lane).toBe("draft");
+    expect(err?.provider).toBe("openai");
   });
 });

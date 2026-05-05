@@ -28,9 +28,12 @@ JavaScript when available:
 `extensions` and `setupEntry` remain valid source entries for workspace and git
 checkout development. `runtimeExtensions` and `runtimeSetupEntry` are preferred
 when OpenClaw loads an installed package and let npm packages avoid runtime
-TypeScript compilation. If an installed package only declares a TypeScript
-source entry, OpenClaw will use a matching built `dist/*.js` peer when one
-exists, then fall back to the TypeScript source.
+TypeScript compilation. Explicit runtime entries are required: `runtimeSetupEntry`
+requires `setupEntry`, and missing `runtimeExtensions` or `runtimeSetupEntry`
+artifacts fail install/discovery instead of silently falling back to source. If
+an installed package only declares a TypeScript source entry, OpenClaw will use a
+matching built `dist/*.js` peer when one exists, then fall back to the TypeScript
+source.
 
 All entry paths must stay inside the plugin package directory. Runtime entries
 and inferred built JavaScript peers do not make an escaping `extensions` or
@@ -127,6 +130,10 @@ export default defineChannelPluginEntry({
   Use it as the canonical place for channel-owned CLI descriptors so root help
   stays non-activating, discovery snapshots include static command metadata, and
   normal CLI command registration remains compatible with full plugin loads.
+- Discovery registration is non-activating, not import-free. OpenClaw may
+  evaluate the trusted plugin entry and channel plugin module to build the
+  snapshot, so keep top-level imports side-effect-free and put sockets,
+  clients, workers, and services behind `"full"`-only paths.
 - `registerFull` only runs when `api.registrationMode === "full"`. It is skipped
   during setup-only loading.
 - Like `definePluginEntry`, `configSchema` can be a lazy factory and OpenClaw
@@ -198,13 +205,13 @@ setter before the full channel entry loads.
 
 `api.registrationMode` tells your plugin how it was loaded:
 
-| Mode              | When                              | What to register                                                                               |
-| ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `"full"`          | Normal gateway startup            | Everything                                                                                     |
-| `"discovery"`     | Read-only capability discovery    | Channel registration plus static CLI descriptors; skip sockets, workers, clients, and services |
-| `"setup-only"`    | Disabled/unconfigured channel     | Channel registration only                                                                      |
-| `"setup-runtime"` | Setup flow with runtime available | Channel registration plus only the lightweight runtime needed before the full entry loads      |
-| `"cli-metadata"`  | Root help / CLI metadata capture  | CLI descriptors only                                                                           |
+| Mode              | When                              | What to register                                                                                                        |
+| ----------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `"full"`          | Normal gateway startup            | Everything                                                                                                              |
+| `"discovery"`     | Read-only capability discovery    | Channel registration plus static CLI descriptors; entry code may load, but skip sockets, workers, clients, and services |
+| `"setup-only"`    | Disabled/unconfigured channel     | Channel registration only                                                                                               |
+| `"setup-runtime"` | Setup flow with runtime available | Channel registration plus only the lightweight runtime needed before the full entry loads                               |
+| `"cli-metadata"`  | Root help / CLI metadata capture  | CLI descriptors only                                                                                                    |
 
 `defineChannelPluginEntry` handles this split automatically. If you use
 `definePluginEntry` directly for a channel, check mode yourself:
@@ -228,6 +235,13 @@ register(api) {
 }
 ```
 
+Discovery mode builds a non-activating registry snapshot. It may still evaluate
+the plugin entry and the channel plugin object so OpenClaw can register channel
+capabilities and static CLI descriptors. Treat module evaluation in discovery as
+trusted but lightweight: no network clients, subprocesses, listeners, database
+connections, background workers, credential reads, or other live runtime side
+effects at top level.
+
 Treat `"setup-runtime"` as the window where setup-only startup surfaces must
 exist without re-entering the full bundled channel runtime. Good fits are
 channel registration, setup-safe HTTP routes, setup-safe gateway methods, and
@@ -240,6 +254,10 @@ For CLI registrars specifically:
   want OpenClaw to lazy-load the real CLI module on first invocation
 - make sure those descriptors cover every top-level command root exposed by the
   registrar
+- keep descriptor command names to letters, numbers, hyphen, and underscore,
+  starting with a letter or number; OpenClaw rejects descriptor names outside
+  that shape and strips terminal control sequences from descriptions before
+  rendering help
 - use `commands` alone only for eager compatibility paths
 
 ## Plugin shapes
